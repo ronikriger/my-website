@@ -107,6 +107,11 @@
     </div>
 
     <script>
+        // Client-side room management for GitHub Pages
+        function generateRoomId() {
+            return Math.random().toString(36).substr(2, 8).toUpperCase();
+        }
+
         document.getElementById('createRoomForm').addEventListener('submit', async (e) => {
             e.preventDefault();
 
@@ -116,24 +121,38 @@
             showLoading();
 
             try {
-                const response = await fetch('/api/rooms', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
+                const roomId = generateRoomId();
+
+                // Store room data in localStorage
+                const roomData = {
+                    id: roomId,
+                    creator: creatorName,
+                    createdAt: Date.now(),
+                    participants: [],
+                    timerState: {
+                        isRunning: false,
+                        currentSession: 'focus',
+                        timeRemaining: 25 * 60 * 1000, // 25 minutes
+                        sessionsCompleted: 0,
+                        startTime: null,
+                        endTime: null
                     },
-                    body: JSON.stringify({ creatorName })
-                });
+                    stats: {
+                        totalFocusTime: 0,
+                        totalSessions: 0,
+                        participantCount: 0
+                    }
+                };
 
-                const data = await response.json();
+                localStorage.setItem(`room_${roomId}`, JSON.stringify(roomData));
+                localStorage.setItem('userName', creatorName);
+                localStorage.setItem('currentRoomId', roomId);
 
-                if (response.ok) {
-                    // Store user name for the room
-                    localStorage.setItem('userName', creatorName);
-                    // Redirect to the room
-                    window.location.href = `/room/${data.roomId}`;
-                } else {
-                    throw new Error(data.error || 'Failed to create room');
-                }
+                hideLoading();
+
+                // Redirect to the room
+                window.location.href = `room.html?id=${roomId}`;
+
             } catch (error) {
                 hideLoading();
                 alert('Error creating room: ' + error.message);
@@ -143,7 +162,7 @@
         document.getElementById('joinRoomForm').addEventListener('submit', async (e) => {
             e.preventDefault();
 
-            const roomCode = document.getElementById('roomCode').value.trim();
+            const roomCode = document.getElementById('roomCode').value.trim().toUpperCase();
             const userName = document.getElementById('userName').value.trim();
 
             if (!roomCode || !userName) return;
@@ -151,17 +170,41 @@
             showLoading();
 
             try {
-                // Check if room exists
-                const response = await fetch(`/api/rooms/${roomCode}`);
+                // Check if room exists in localStorage or create a new one
+                let roomData = localStorage.getItem(`room_${roomCode}`);
 
-                if (response.ok) {
-                    // Store user name for the room
-                    localStorage.setItem('userName', userName);
-                    // Redirect to the room
-                    window.location.href = `/room/${roomCode}`;
-                } else {
-                    throw new Error('Room not found');
+                if (!roomData) {
+                    // Create a new room if it doesn't exist
+                    roomData = {
+                        id: roomCode,
+                        creator: userName,
+                        createdAt: Date.now(),
+                        participants: [],
+                        timerState: {
+                            isRunning: false,
+                            currentSession: 'focus',
+                            timeRemaining: 25 * 60 * 1000,
+                            sessionsCompleted: 0,
+                            startTime: null,
+                            endTime: null
+                        },
+                        stats: {
+                            totalFocusTime: 0,
+                            totalSessions: 0,
+                            participantCount: 0
+                        }
+                    };
+                    localStorage.setItem(`room_${roomCode}`, JSON.stringify(roomData));
                 }
+
+                localStorage.setItem('userName', userName);
+                localStorage.setItem('currentRoomId', roomCode);
+
+                hideLoading();
+
+                // Redirect to the room
+                window.location.href = `room.html?id=${roomCode}`;
+
             } catch (error) {
                 hideLoading();
                 alert('Error joining room: ' + error.message);
@@ -180,8 +223,51 @@
         const urlParams = new URLSearchParams(window.location.search);
         const roomParam = urlParams.get('room');
         if (roomParam) {
-            document.getElementById('roomCode').value = roomParam;
+            document.getElementById('roomCode').value = roomParam.toUpperCase();
         }
+
+        // Show demo message for GitHub Pages
+        setTimeout(() => {
+            const demoNotice = document.createElement('div');
+            demoNotice.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: linear-gradient(135deg, #4fd1c7 0%, #06beb6 100%);
+                color: white;
+                padding: 1rem 1.5rem;
+                border-radius: 12px;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+                font-size: 0.875rem;
+                font-weight: 500;
+                z-index: 1000;
+                animation: slideIn 0.5s ease;
+            `;
+            demoNotice.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <i class="fas fa-info-circle"></i>
+                    <span>Live on GitHub Pages! ✨</span>
+                </div>
+            `;
+
+            document.body.appendChild(demoNotice);
+
+            // Add slideIn animation
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes slideIn {
+                    from { transform: translateX(100%); opacity: 0; }
+                    to { transform: translateX(0); opacity: 1; }
+                }
+            `;
+            document.head.appendChild(style);
+
+            // Remove after 5 seconds
+            setTimeout(() => {
+                demoNotice.style.animation = 'slideIn 0.5s ease reverse';
+                setTimeout(() => demoNotice.remove(), 500);
+            }, 5000);
+        }, 2000);
     </script>
 </body>
 

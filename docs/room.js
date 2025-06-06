@@ -1,11 +1,21 @@
 class PomodoroRoom {
     constructor() {
-        this.socket = io();
-        this.roomId = this.getRoomIdFromUrl();
+        // Get room ID from URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        this.roomId = urlParams.get('id');
+
+        if (!this.roomId) {
+            alert('Invalid room ID. Redirecting to home...');
+            window.location.href = 'index.html';
+            return;
+        }
+
         this.userName = localStorage.getItem('userName') || 'Anonymous';
         this.roomState = null;
         this.achievements = new Set();
         this.currentTip = 0;
+        this.timerInterval = null;
+        this.updateInterval = null;
         this.settings = {
             notifications: true,
             sounds: true,
@@ -16,29 +26,67 @@ class PomodoroRoom {
     }
 
     init() {
+        this.loadRoom();
         this.bindEvents();
-        this.joinRoom();
         this.initTipCarousel();
         this.loadSettings();
         this.initParticles();
+        this.startUpdateLoop();
+        this.addToHistory('Joined the focus room');
     }
 
-    getRoomIdFromUrl() {
-        const path = window.location.pathname;
-        return path.split('/room/')[1];
+    loadRoom() {
+        // Load room from localStorage or create if doesn't exist
+        let roomData = localStorage.getItem(`room_${this.roomId}`);
+
+        if (!roomData) {
+            // Create new room if it doesn't exist
+            this.roomState = {
+                id: this.roomId,
+                creator: this.userName,
+                participants: [],
+                timerState: {
+                    isRunning: false,
+                    currentSession: 'focus',
+                    timeRemaining: 25 * 60 * 1000,
+                    sessionsCompleted: 0,
+                    startTime: null,
+                    endTime: null
+                },
+                stats: {
+                    totalFocusTime: 0,
+                    totalSessions: 0,
+                    participantCount: 0
+                }
+            };
+            this.saveRoom();
+        } else {
+            this.roomState = JSON.parse(roomData);
+        }
+
+        // Add current user as participant if not already there
+        const existingParticipant = this.roomState.participants.find(p => p.name === this.userName);
+        if (!existingParticipant) {
+            this.roomState.participants.push({
+                id: 'local_' + Date.now(),
+                name: this.userName,
+                joinedAt: Date.now(),
+                sessionsCompleted: 0,
+                totalFocusTime: 0,
+                isActive: true
+            });
+            this.roomState.stats.participantCount = this.roomState.participants.length;
+            this.saveRoom();
+        }
+
+        this.updateUI();
+    }
+
+    saveRoom() {
+        localStorage.setItem(`room_${this.roomId}`, JSON.stringify(this.roomState));
     }
 
     bindEvents() {
-        // Socket events
-        this.socket.on('room-state', (state) => this.updateRoomState(state));
-        this.socket.on('timer-started', (state) => this.onTimerStarted(state));
-        this.socket.on('timer-paused', (state) => this.onTimerPaused(state));
-        this.socket.on('timer-update', (timerState) => this.updateTimer(timerState));
-        this.socket.on('session-completed', (state) => this.onSessionCompleted(state));
-        this.socket.on('participant-joined', (data) => this.onParticipantJoined(data));
-        this.socket.on('participant-left', (data) => this.onParticipantLeft(data));
-        this.socket.on('error', (error) => this.showNotification(error.message, 'error'));
-
         // UI events
         document.getElementById('startPauseBtn').addEventListener('click', () => this.toggleTimer());
         document.getElementById('skipBtn').addEventListener('click', () => this.skipSession());
@@ -70,16 +118,22 @@ class PomodoroRoom {
         });
     }
 
-    joinRoom() {
-        this.socket.emit('join-room', {
-            roomId: this.roomId,
-            userName: this.userName
-        });
-    }
+    startUpdateLoop() {
+        // Update timer every second
+        this.updateInterval = setInterval(() => {
+            if (this.roomState.timerState.isRunning) {
+                const now = Date.now();
+                this.roomState.timerState.timeRemaining = Math.max(0, this.roomState.timerState.endTime - now);
 
-    updateRoomState(state) {
-        this.roomState = state;
-        this.updateUI();
+                if (this.roomState.timerState.timeRemaining <= 0) {
+                    this.completeSession();
+                } else {
+                    this.updateTimer(this.roomState.timerState);
+                }
+
+                this.saveRoom();
+            }
+        }, 1000);
     }
 
     updateUI() {
@@ -134,7 +188,7 @@ class PomodoroRoom {
             timerGlow.style.strokeDashoffset = strokeDashoffset;
         }
 
-        // Update session counter and dots
+        // Update session indicators
         this.updateSessionIndicators(timerState);
 
         // Update progress visualization
@@ -165,7 +219,7 @@ class PomodoroRoom {
             startPauseBtn.classList.add('btn-warning');
         } else {
             icon.className = 'fas fa-play';
-            text.textContent = 'Start';
+            text.textContent = this.roomState.timerState.currentSession === 'focus' ? 'Start Focus' : 'Start Break';
             startPauseBtn.classList.remove('btn-warning');
             startPauseBtn.classList.add('btn-primary');
         }
@@ -199,136 +253,91 @@ class PomodoroRoom {
 
     toggleTimer() {
         if (this.roomState.timerState.isRunning) {
-            this.socket.emit('pause-timer', { roomId: this.roomId });
+            this.pauseTimer();
         } else {
-            this.socket.emit('start-timer', { roomId: this.roomId });
+            this.startTimer();
         }
+    }
+
+    startTimer() {
+        this.roomState.timerState.isRunning = true;
+        this.roomState.timerState.startTime = Date.now();
+        this.roomState.timerState.endTime = this.roomState.timerState.startTime + this.roomState.timerState.timeRemaining;
+
+        this.updateControls();
+        this.saveRoom();
+        this.showNotification('Timer started! 🎯', 'success');
+        this.addToHistory('Started focus session');
+    }
+
+    pauseTimer() {
+        this.roomState.timerState.isRunning = false;
+        this.roomState.timerState.timeRemaining = Math.max(0, this.roomState.timerState.endTime - Date.now());
+
+        this.updateControls();
+        this.saveRoom();
+        this.showNotification('Timer paused ⏸️', 'info');
+        this.addToHistory('Paused session');
     }
 
     skipSession() {
         if (confirm('Are you sure you want to skip this session?')) {
-            this.socket.emit('complete-session', { roomId: this.roomId });
+            this.completeSession();
         }
     }
 
-    onTimerStarted(state) {
-        this.updateRoomState(state);
-        this.showNotification('Timer started! 🎯', 'success');
+    resetTimer() {
+        if (confirm('Are you sure you want to reset the current session?')) {
+            this.roomState.timerState.isRunning = false;
+            this.roomState.timerState.timeRemaining = this.getTotalTimeForSession(this.roomState.timerState.currentSession);
+            this.updateUI();
+            this.saveRoom();
+            this.showNotification('Timer reset! ↺', 'info');
+            this.addToHistory('Reset timer');
+        }
     }
 
-    onTimerPaused(state) {
-        this.updateRoomState(state);
-        this.showNotification('Timer paused ⏸️', 'info');
-    }
+    completeSession() {
+        this.roomState.timerState.isRunning = false;
+        this.roomState.timerState.sessionsCompleted++;
+        this.roomState.stats.totalSessions++;
 
-    onSessionCompleted(state) {
-        this.updateRoomState(state);
+        // Update participant stats
+        const currentUser = this.roomState.participants.find(p => p.name === this.userName);
+        if (currentUser && this.roomState.timerState.currentSession === 'focus') {
+            currentUser.sessionsCompleted++;
+            currentUser.totalFocusTime += 25 * 60 * 1000;
+            this.roomState.stats.totalFocusTime += 25 * 60 * 1000;
+        }
+
+        // Determine next session type
+        if (this.roomState.timerState.currentSession === 'focus') {
+            if (this.roomState.timerState.sessionsCompleted % 4 === 0) {
+                this.roomState.timerState.currentSession = 'longBreak';
+                this.roomState.timerState.timeRemaining = 15 * 60 * 1000;
+            } else {
+                this.roomState.timerState.currentSession = 'shortBreak';
+                this.roomState.timerState.timeRemaining = 5 * 60 * 1000;
+            }
+        } else {
+            this.roomState.timerState.currentSession = 'focus';
+            this.roomState.timerState.timeRemaining = 25 * 60 * 1000;
+        }
+
+        this.checkAchievements();
+        this.updateUI();
+        this.saveRoom();
         this.showSessionCompleteModal();
-        this.playNotificationSound();
-    }
 
-    onParticipantJoined(data) {
-        this.updateRoomState(data.roomState);
-        this.showNotification(`${data.participant.name} joined the room! 👋`, 'success');
-    }
-
-    onParticipantLeft(data) {
-        this.updateRoomState(data.roomState);
-        this.showNotification('Someone left the room 👋', 'info');
-    }
-
-    showSessionCompleteModal() {
-        const modal = document.getElementById('sessionCompleteModal');
-        const title = document.getElementById('modalTitle');
-        const message = document.getElementById('modalMessage');
-
-        const sessionType = this.roomState.timerState.currentSession;
-        if (sessionType === 'shortBreak' || sessionType === 'longBreak') {
-            title.textContent = '☕ Break Time!';
-            message.textContent = 'Take a well-deserved break. You\'ve earned it!';
-        } else {
-            title.textContent = '🎯 Focus Time!';
-            message.textContent = 'Time to focus! Let\'s make this session count.';
+        if (this.settings.sounds) {
+            this.playNotificationSound();
         }
 
-        modal.classList.remove('hidden');
+        this.addToHistory('Completed session');
     }
 
-    hideSessionCompleteModal() {
-        document.getElementById('sessionCompleteModal').classList.add('hidden');
-    }
-
-    copyRoomLink() {
-        const roomLink = `${window.location.origin}/room/${this.roomId}`;
-        navigator.clipboard.writeText(roomLink).then(() => {
-            this.showNotification('Room link copied to clipboard! 📋', 'success');
-        }).catch(() => {
-            // Fallback for older browsers
-            const textArea = document.createElement('textarea');
-            textArea.value = roomLink;
-            document.body.appendChild(textArea);
-            textArea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textArea);
-            this.showNotification('Room link copied! 📋', 'success');
-        });
-    }
-
-    showNotification(message, type = 'info') {
-        const notification = document.createElement('div');
-        notification.className = `notification ${type}`;
-        notification.textContent = message;
-
-        const container = document.getElementById('notifications');
-        container.appendChild(notification);
-
-        // Show notification
-        setTimeout(() => notification.classList.add('show'), 100);
-
-        // Remove notification after 3 seconds
-        setTimeout(() => {
-            notification.classList.remove('show');
-            setTimeout(() => container.removeChild(notification), 300);
-        }, 3000);
-    }
-
-    playNotificationSound() {
-        // Create a simple beep sound using Web Audio API
-        try {
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
-
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-
-            oscillator.frequency.value = 800;
-            oscillator.type = 'sine';
-
-            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
-
-            oscillator.start();
-            oscillator.stop(audioContext.currentTime + 0.5);
-        } catch (error) {
-            console.log('Could not play notification sound');
-        }
-    }
-
-    formatTime(milliseconds) {
-        const hours = Math.floor(milliseconds / 3600000);
-        const minutes = Math.floor((milliseconds % 3600000) / 60000);
-
-        if (hours > 0) {
-            return `${hours}h ${minutes}m`;
-        } else {
-            return `${minutes}m`;
-        }
-    }
-
-    // New enhanced methods
+    // Enhanced methods from the previous version
     initParticles() {
-        // Particles are handled by CSS, but we could add dynamic effects here
         console.log('Particles initialized');
     }
 
@@ -340,18 +349,16 @@ class PomodoroRoom {
             tips[this.currentTip].classList.remove('active');
             this.currentTip = (this.currentTip + 1) % tips.length;
             tips[this.currentTip].classList.add('active');
-        }, 10000); // Change tip every 10 seconds
+        }, 10000);
     }
 
     updateSessionIndicators(timerState) {
-        // Update session counter
         const currentSessionSpan = document.getElementById('currentSession');
         if (currentSessionSpan) {
             const sessionNumber = (timerState.sessionsCompleted % 4) + 1;
             currentSessionSpan.textContent = sessionNumber;
         }
 
-        // Update session dots
         const dots = document.querySelectorAll('.session-dot');
         dots.forEach((dot, index) => {
             dot.classList.remove('active', 'completed');
@@ -376,17 +383,14 @@ class PomodoroRoom {
     }
 
     switchTab(tabName) {
-        // Hide all tab contents
         document.querySelectorAll('.tab-content').forEach(tab => {
             tab.classList.remove('active');
         });
 
-        // Remove active class from all tabs
         document.querySelectorAll('.info-tab').forEach(tab => {
             tab.classList.remove('active');
         });
 
-        // Show selected tab content
         const tabContent = document.getElementById(`${tabName}Tab`);
         const tabButton = document.querySelector(`[data-tab="${tabName}"]`);
 
@@ -394,22 +398,34 @@ class PomodoroRoom {
         if (tabButton) tabButton.classList.add('active');
     }
 
-    resetTimer() {
-        if (confirm('Are you sure you want to reset the current session?')) {
-            this.socket.emit('reset-timer', { roomId: this.roomId });
-        }
-    }
-
     shareRoom() {
+        const roomUrl = `${window.location.origin}${window.location.pathname}?id=${this.roomId}`;
+
         if (navigator.share) {
             navigator.share({
                 title: 'Join my Focus Room',
                 text: 'Let\'s focus together in this Pomodoro session!',
-                url: window.location.href
+                url: roomUrl
             });
         } else {
             this.copyRoomLink();
         }
+    }
+
+    copyRoomLink() {
+        const roomUrl = `${window.location.origin}${window.location.pathname}?id=${this.roomId}`;
+
+        navigator.clipboard.writeText(roomUrl).then(() => {
+            this.showNotification('Room link copied to clipboard! 📋', 'success');
+        }).catch(() => {
+            const textArea = document.createElement('textarea');
+            textArea.value = roomUrl;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            this.showNotification('Room link copied! 📋', 'success');
+        });
     }
 
     showSettingsModal() {
@@ -426,7 +442,6 @@ class PomodoroRoom {
             this.settings = { ...this.settings, ...JSON.parse(savedSettings) };
         }
 
-        // Apply settings to UI
         document.getElementById('enableNotifications').checked = this.settings.notifications;
         document.getElementById('enableSounds').checked = this.settings.sounds;
         document.getElementById('autoStartBreaks').checked = this.settings.autoStartBreaks;
@@ -434,6 +449,39 @@ class PomodoroRoom {
 
     saveSettings() {
         localStorage.setItem('pomodoroSettings', JSON.stringify(this.settings));
+    }
+
+    checkAchievements() {
+        if (!this.roomState) return;
+
+        const completedSessions = this.roomState.timerState.sessionsCompleted;
+
+        if (completedSessions >= 1 && !this.achievements.has('first-session')) {
+            this.achievements.add('first-session');
+            this.unlockAchievement('first-session', 'First Focus Complete!');
+        }
+
+        if (completedSessions >= 4 && !this.achievements.has('marathon')) {
+            this.achievements.add('marathon');
+            this.unlockAchievement('marathon', 'Marathon Achiever!');
+        }
+
+        this.updateAchievementBadges();
+    }
+
+    unlockAchievement(achievementId, message) {
+        const badge = document.querySelector(`[data-achievement="${achievementId}"]`);
+        if (badge) {
+            badge.classList.remove('locked');
+            badge.classList.add('unlocked');
+        }
+
+        this.showAchievementPopup(message);
+
+        const achievementEarned = document.getElementById('achievementEarned');
+        if (achievementEarned) {
+            achievementEarned.style.display = 'flex';
+        }
     }
 
     showAchievementPopup(achievement) {
@@ -446,45 +494,6 @@ class PomodoroRoom {
         setTimeout(() => {
             popup.classList.remove('show');
         }, 4000);
-    }
-
-    checkAchievements() {
-        if (!this.roomState) return;
-
-        const completedSessions = this.roomState.timerState.sessionsCompleted;
-
-        // First session achievement
-        if (completedSessions >= 1 && !this.achievements.has('first-session')) {
-            this.achievements.add('first-session');
-            this.unlockAchievement('first-session', 'First Focus Complete!');
-        }
-
-        // Marathon achievement (4+ sessions)
-        if (completedSessions >= 4 && !this.achievements.has('marathon')) {
-            this.achievements.add('marathon');
-            this.unlockAchievement('marathon', 'Marathon Achiever!');
-        }
-
-        // Update achievement display
-        this.updateAchievementBadges();
-    }
-
-    unlockAchievement(achievementId, message) {
-        // Update badge
-        const badge = document.querySelector(`[data-achievement="${achievementId}"]`);
-        if (badge) {
-            badge.classList.remove('locked');
-            badge.classList.add('unlocked');
-        }
-
-        // Show popup
-        this.showAchievementPopup(message);
-
-        // Show in session complete modal
-        const achievementEarned = document.getElementById('achievementEarned');
-        if (achievementEarned) {
-            achievementEarned.style.display = 'flex';
-        }
     }
 
     updateAchievementBadges() {
@@ -512,71 +521,70 @@ class PomodoroRoom {
 
         historyContainer.insertBefore(historyItem, historyContainer.firstChild);
 
-        // Keep only last 10 items
         const items = historyContainer.querySelectorAll('.history-item');
         if (items.length > 10) {
             items[items.length - 1].remove();
         }
     }
 
-    // Override existing methods to add enhanced functionality
-    onTimerStarted(state) {
-        this.updateRoomState(state);
-        this.showNotification('Timer started! 🎯', 'success');
-        this.addToHistory('Started focus session');
-    }
-
-    onTimerPaused(state) {
-        this.updateRoomState(state);
-        this.showNotification('Timer paused ⏸️', 'info');
-        this.addToHistory('Paused session');
-    }
-
-    onSessionCompleted(state) {
-        this.updateRoomState(state);
-        this.checkAchievements();
-        this.showSessionCompleteModal();
-
-        // Enhanced completion notification
-        if (this.settings.sounds) {
-            this.playNotificationSound();
-        }
-
-        // Update modal with current stats
+    showSessionCompleteModal() {
+        const modal = document.getElementById('sessionCompleteModal');
+        const title = document.getElementById('modalTitle');
+        const message = document.getElementById('modalMessage');
         const modalSessionCount = document.getElementById('modalSessionCount');
         const modalFocusTime = document.getElementById('modalFocusTime');
 
+        const sessionType = this.roomState.timerState.currentSession;
+        if (sessionType === 'shortBreak' || sessionType === 'longBreak') {
+            title.textContent = '☕ Break Time!';
+            message.textContent = 'Take a well-deserved break. You\'ve earned it!';
+        } else {
+            title.textContent = '🎯 Focus Time!';
+            message.textContent = 'Time to focus! Let\'s make this session count.';
+        }
+
         if (modalSessionCount) {
-            modalSessionCount.textContent = state.timerState.sessionsCompleted;
+            modalSessionCount.textContent = this.roomState.timerState.sessionsCompleted;
         }
         if (modalFocusTime) {
-            modalFocusTime.textContent = this.formatTime(state.stats.totalFocusTime);
+            modalFocusTime.textContent = this.formatTime(this.roomState.stats.totalFocusTime);
         }
 
-        this.addToHistory('Completed session');
+        modal.classList.remove('hidden');
     }
 
-    onParticipantJoined(data) {
-        this.updateRoomState(data.roomState);
-        this.showNotification(`${data.participant.name} joined the room! 👋`, 'success');
-        this.addToHistory(`${data.participant.name} joined`);
+    hideSessionCompleteModal() {
+        document.getElementById('sessionCompleteModal').classList.add('hidden');
+
+        if (this.settings.autoStartBreaks) {
+            setTimeout(() => {
+                this.startTimer();
+            }, 1000);
+        }
     }
 
-    onParticipantLeft(data) {
-        this.updateRoomState(data.roomState);
-        this.showNotification('Someone left the room 👋', 'info');
-        this.addToHistory('Someone left the room');
+    showNotification(message, type = 'info') {
+        const notification = document.createElement('div');
+        notification.className = `notification ${type}`;
+        notification.textContent = message;
+
+        const container = document.getElementById('notifications');
+        container.appendChild(notification);
+
+        setTimeout(() => notification.classList.add('show'), 100);
+
+        setTimeout(() => {
+            notification.classList.remove('show');
+            setTimeout(() => container.removeChild(notification), 300);
+        }, 3000);
     }
 
     playNotificationSound() {
         if (!this.settings.sounds) return;
 
-        // Enhanced notification sound
         try {
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-
-            // Create a more pleasant sound sequence
-            const frequencies = [523.25, 659.25, 783.99]; // C5, E5, G5
+            const frequencies = [523.25, 659.25, 783.99];
 
             frequencies.forEach((freq, index) => {
                 const oscillator = audioContext.createOscillator();
@@ -597,6 +605,17 @@ class PomodoroRoom {
             });
         } catch (error) {
             console.log('Could not play notification sound');
+        }
+    }
+
+    formatTime(milliseconds) {
+        const hours = Math.floor(milliseconds / 3600000);
+        const minutes = Math.floor((milliseconds % 3600000) / 60000);
+
+        if (hours > 0) {
+            return `${hours}h ${minutes}m`;
+        } else {
+            return `${minutes}m`;
         }
     }
 }
