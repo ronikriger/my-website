@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Silent Pomodoro Room</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+
+<body>
+    <div class="container">
+        <header class="hero">
+            <div class="hero-content">
+                <h1 class="logo">
+                    <i class="fas fa-clock"></i>
+                    Silent Pomodoro Room
+                </h1>
+                <p class="tagline">Focus together, achieve more</p>
+                <p class="description">
+                    Create a shareable focus room with synchronized Pomodoro timers.
+                    Perfect for virtual co-working, study groups, and productive sessions with friends.
+                </p>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <div class="actions-container">
+                <div class="action-card create-room">
+                    <div class="card-icon">
+                        <i class="fas fa-plus-circle"></i>
+                    </div>
+                    <h2>Create a Room</h2>
+                    <p>Start a new focus session and invite others to join</p>
+                    <form id="createRoomForm" class="room-form">
+                        <div class="input-group">
+                            <label for="creatorName">Your Name</label>
+                            <input type="text" id="creatorName" placeholder="Enter your name" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-rocket"></i>
+                            Create Room
+                        </button>
+                    </form>
+                </div>
+
+                <div class="divider">
+                    <span>or</span>
+                </div>
+
+                <div class="action-card join-room">
+                    <div class="card-icon">
+                        <i class="fas fa-door-open"></i>
+                    </div>
+                    <h2>Join a Room</h2>
+                    <p>Enter a room code to join an existing session</p>
+                    <form id="joinRoomForm" class="room-form">
+                        <div class="input-group">
+                            <label for="roomCode">Room Code</label>
+                            <input type="text" id="roomCode" placeholder="Enter room code" required>
+                        </div>
+                        <div class="input-group">
+                            <label for="userName">Your Name</label>
+                            <input type="text" id="userName" placeholder="Enter your name" required>
+                        </div>
+                        <button type="submit" class="btn btn-secondary">
+                            <i class="fas fa-sign-in-alt"></i>
+                            Join Room
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <div class="features">
+                <h3>Why Silent Pomodoro Room?</h3>
+                <div class="features-grid">
+                    <div class="feature">
+                        <i class="fas fa-sync-alt"></i>
+                        <h4>Synchronized Timers</h4>
+                        <p>Everyone in the room shares the same Pomodoro timer, keeping your group in perfect sync.</p>
+                    </div>
+                    <div class="feature">
+                        <i class="fas fa-gamepad"></i>
+                        <h4>Gamified Experience</h4>
+                        <p>Track your progress, earn achievements, and stay motivated with engaging visual feedback.</p>
+                    </div>
+                    <div class="feature">
+                        <i class="fas fa-users"></i>
+                        <h4>Social Accountability</h4>
+                        <p>Focus better when you're not alone. See who's active and stay motivated together.</p>
+                    </div>
+                    <div class="feature">
+                        <i class="fas fa-chart-line"></i>
+                        <h4>Progress Tracking</h4>
+                        <p>Monitor your focus sessions, breaks, and productivity statistics in real-time.</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="loading" class="loading hidden">
+        <div class="spinner"></div>
+        <p>Creating your focus room...</p>
+    </div>
+
+    <script>
+        document.getElementById('createRoomForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const creatorName = document.getElementById('creatorName').value.trim();
+            if (!creatorName) return;
+
+            showLoading();
+
+            try {
+                const response = await fetch('/api/rooms', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ creatorName })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    // Store user name for the room
+                    localStorage.setItem('userName', creatorName);
+                    // Redirect to the room
+                    window.location.href = `/room/${data.roomId}`;
+                } else {
+                    throw new Error(data.error || 'Failed to create room');
+                }
+            } catch (error) {
+                hideLoading();
+                alert('Error creating room: ' + error.message);
+            }
+        });
+
+        document.getElementById('joinRoomForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const roomCode = document.getElementById('roomCode').value.trim();
+            const userName = document.getElementById('userName').value.trim();
+
+            if (!roomCode || !userName) return;
+
+            showLoading();
+
+            try {
+                // Check if room exists
+                const response = await fetch(`/api/rooms/${roomCode}`);
+
+                if (response.ok) {
+                    // Store user name for the room
+                    localStorage.setItem('userName', userName);
+                    // Redirect to the room
+                    window.location.href = `/room/${roomCode}`;
+                } else {
+                    throw new Error('Room not found');
+                }
+            } catch (error) {
+                hideLoading();
+                alert('Error joining room: ' + error.message);
+            }
+        });
+
+        function showLoading() {
+            document.getElementById('loading').classList.remove('hidden');
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').classList.add('hidden');
+        }
+
+        // Auto-fill room code from URL parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomParam = urlParams.get('room');
+        if (roomParam) {
+            document.getElementById('roomCode').value = roomParam;
+        }
+    </script>
+</body>
+
+</html>
